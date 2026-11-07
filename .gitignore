@@ -1,0 +1,22 @@
+# Node & Dependency directories
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Database & Runtime artifacts
+*.db
+*.db-journal
+*.db-shm
+*.db-wal
+
+# Environment & Local tools
+.env
+.env.local
+powershell.bat
+r.last_date_parsed
+
+# OS generated files
+.DS_Store
+Thumbs.db

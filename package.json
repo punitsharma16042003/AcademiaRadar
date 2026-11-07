@@ -1,0 +1,22 @@
+{
+  "name": "academiaradar",
+  "version": "1.0.0",
+  "description": "AcademiaRadar - Local Web Portal & Crawler for Research Opportunities, PhD Admissions, and Recruitment Advertisements across 253 Institutes",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "test": "node scripts/verify_logic.js"
+  },
+  "keywords": [
+    "research",
+    "phd-admissions",
+    "recruitment",
+    "fellowships",
+    "postdoc",
+    "jrf",
+    "crawler",
+    "skeuomorphic"
+  ],
+  "author": "AcademiaRadar",
+  "license": "MIT"
+}
