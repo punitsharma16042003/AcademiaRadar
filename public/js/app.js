@@ -558,20 +558,30 @@ async function toggleTrackOpportunity(oppId) {
 }
 
 async function updateTrackerStage(id, newStage) {
-  try {
-    // 1. Instant optimistic UI update
-    const item = trackerItems.find(t => t.id === id);
-    if (item) {
-      item.stage = newStage;
-      renderKanban();
-    }
+  // 1. Instant optimistic UI update
+  const item = trackerItems.find(t => t.id === id);
+  const oldStage = item ? item.stage : null;
+  if (item) {
+    item.stage = newStage;
+    renderKanban();
+  }
 
-    // 2. Persist to server
-    const res = await fetch(`/api/tracker/${id}`, {
-      method: 'PUT',
+  try {
+    // 2. Persist to server using fast dedicated POST endpoint first
+    let res = await fetch('/api/tracker/stage', {
+      method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ stage: newStage })
+      body: JSON.stringify({ id, stage: newStage })
     });
+
+    // If dedicated route returned error, fallback to PUT /api/tracker/:id
+    if (!res.ok) {
+      res = await fetch(`/api/tracker/${id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ stage: newStage })
+      });
+    }
 
     if (!res.ok) {
       throw new Error(`Server returned HTTP ${res.status}`);
@@ -582,8 +592,11 @@ async function updateTrackerStage(id, newStage) {
     await loadStats();
   } catch (e) {
     console.error('Failed to update stage:', e);
-    showToast('Failed to update stage', true);
-    await loadTracker();
+    showToast('Failed to update stage. Please restart server with start_server.bat', true);
+    if (item && oldStage) {
+      item.stage = oldStage;
+      renderKanban();
+    }
   }
 }
 

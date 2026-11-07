@@ -25,6 +25,13 @@ if %ERRORLEVEL% NEQ 0 (
 )
 
 echo [OK] Node.js detected.
+
+:: Free port 5000 if occupied by a previous instance
+for /f "tokens=5" %%a in ('netstat -aon ^| findstr :5000 ^| findstr LISTENING') do (
+    echo [*] Terminating previous server process on port 5000 (PID: %%a)...
+    taskkill /F /PID %%a >nul 2>&1
+)
+
 echo [*] Initializing database and starting local web server...
 echo [*] Server will be available at: http://localhost:5000
 echo.

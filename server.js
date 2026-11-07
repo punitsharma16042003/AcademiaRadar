@@ -408,7 +408,20 @@ const server = http.createServer(async (req, res) => {
       return sendJson(res, 201, { success: true, id });
     }
 
-    if (pathname.startsWith('/api/tracker/') && req.method === 'PUT') {
+    // Fast dedicated stage update endpoint
+    if (pathname === '/api/tracker/stage' && (req.method === 'POST' || req.method === 'PUT')) {
+      const data = await parseJsonBody(req);
+      const id = data.id;
+      const stage = data.stage;
+      if (!id || !stage) {
+        return sendJson(res, 400, { error: 'Both id and stage are required' });
+      }
+      const now = new Date().toISOString();
+      db.prepare('UPDATE application_tracker SET stage = ?, updated_at = ? WHERE id = ?').run(stage, now, id);
+      return sendJson(res, 200, { success: true, id, stage });
+    }
+
+    if (pathname.startsWith('/api/tracker/') && (req.method === 'PUT' || req.method === 'POST')) {
       const id = pathname.replace('/api/tracker/', '');
       const data = await parseJsonBody(req);
       const now = new Date().toISOString();
