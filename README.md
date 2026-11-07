@@ -78,31 +78,42 @@ Move applications through a personalized workflow:
 ### 7. 📊 Data Export (CSV & JSON)
 - Export all active advertisements to an Excel-ready `.csv` spreadsheet or `.json` file.
 
-### 8. 🌓 Polished Dark & Light Theme
-- Sleek glassmorphism dashboard optimized for high readability.
+### 8. 🎨 Authentic Blender 3D Theme (Dark & Light)
+- High-contrast precision 3D studio look and feel inspired by Blender 4.x.
+- Crystal-clear dropdown and selector visibility in both Dark and Light modes.
 
 ---
 
-## 💻 Quick Start Guide
+## 💻 How Anyone Can Run This on Their PC
 
-### Option 1: Double-Click (Windows)
-Double-click `start_server.bat` in this folder. It will start the server and automatically launch your browser to `http://localhost:5000`.
+### ⚡ The Only Requirement:
+Make sure **[Node.js](https://nodejs.org)** (v22 LTS or v24) is installed.  
+> 💡 **Zero `npm install` required!** The app runs on native Node.js and built-in SQLite (`node:sqlite`), so there is no heavy `node_modules` folder to download.
 
-### Option 2: Command Line (Any OS)
-Make sure you have [Node.js](https://nodejs.org) (v18+ or v24+ recommended) installed:
+---
 
-```bash
-# Start the local server
-node server.js
-```
+### Option 1: Easiest Method (Windows - No Git or Coding Needed)
+1. Go to this repository: [github.com/punitsharma16042003/AcademiaRadar](https://github.com/punitsharma16042003/AcademiaRadar)
+2. Click the green **`<> Code`** button and select **Download ZIP**.
+3. Extract the ZIP file anywhere on your computer.
+4. Double-click **`start_server.bat`**.
+5. Your browser will automatically open:
+   👉 **`http://localhost:5000`**
 
-Or using npm:
-```bash
-npm start
-```
+---
 
-Open your browser at:
-👉 **`http://localhost:5000`**
+### Option 2: Command Line (Windows, macOS, Linux)
+1. Clone the repository:
+   ```bash
+   git clone https://github.com/punitsharma16042003/AcademiaRadar.git
+   cd AcademiaRadar
+   ```
+2. Start the local server:
+   ```bash
+   node server.js
+   ```
+3. Open your browser at:
+   👉 **`http://localhost:5000`**
 
 ---
 
