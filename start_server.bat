@@ -1,21 +1,16 @@
 @echo off
-title AcademiaRadar - Research & PhD Portal
+setlocal
+title AcademiaRadar - Research and PhD Portal
+
+set "PATH=C:\Windows\System32;C:\Windows;%PATH%"
+
 echo ======================================================================
-echo   ACADEMIARADAR - RECRUITMENT & PhD ADMISSIONS PORTAL
+echo   ACADEMIARADAR - RECRUITMENT AND PHD ADMISSIONS PORTAL
 echo ======================================================================
-echo   Tracking 253 Premier Institutions across India:
-echo   - 23 IITs, IISc, 7 IISERs, NISER
-echo   - 31 NITs, 28 IIITs, 38 CSIR Labs
-echo   - DAE, ISRO, DRDO, ICMR, DBT, DST, MoES, ICAR Labs
-echo   - 23 AIIMS Medical Institutes
-echo   - 25 Top Private Research Universities
+echo   Tracking 253 Premier Research Institutions
 echo ======================================================================
 echo.
 
-:: Ensure Windows System32 is in path
-set "PATH=C:\Windows\System32;C:\Windows;%PATH%"
-
-:: Check Node.js
 where node >nul 2>&1
 if %ERRORLEVEL% NEQ 0 (
     echo [ERROR] Node.js is not found in your PATH.
@@ -25,20 +20,24 @@ if %ERRORLEVEL% NEQ 0 (
 )
 
 echo [OK] Node.js detected.
+echo [*] Checking port 5000...
 
-:: Free port 5000 if occupied by a previous instance
-for /f "tokens=5" %%a in ('netstat -aon ^| findstr :5000 ^| findstr LISTENING') do (
-    echo [*] Terminating previous server process on port 5000 (PID: %%a)...
-    taskkill /F /PID %%a >nul 2>&1
+:: Optional: Clean up any lingering node on port 5000 using native netstat / taskkill safely without breakable syntax
+for /f "tokens=5" %%p in ('netstat -aon 2^>nul ^| findstr /r ":5000 .*LISTENING"') do (
+    taskkill /F /PID %%p >nul 2>&1
 )
 
 echo [*] Initializing database and starting local web server...
 echo [*] Server will be available at: http://localhost:5000
 echo.
 
-:: Launch default browser after 2 seconds in background
+:: Launch default browser after 2 seconds
 start "" cmd /c "timeout /t 2 /nobreak >nul & start http://localhost:5000"
 
 :: Start Node.js server
 node server.js
-pause
+if %ERRORLEVEL% NEQ 0 (
+    echo.
+    echo [ERROR] Server stopped with error code %ERRORLEVEL%.
+    pause
+)

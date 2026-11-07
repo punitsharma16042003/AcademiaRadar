@@ -410,14 +410,38 @@ async function scanSpecificInstitute(instId) {
 }
 
 // Application Pipeline (Kanban Tracker)
+const STAGES_ORDER = [
+  'Interested',
+  'Preparing Documents',
+  'Applied',
+  'Interview/Written Test',
+  'Selected'
+];
+
 async function loadTracker() {
+  // Load local cache first so UI is instant even if network is slow
+  try {
+    const cached = localStorage.getItem('academia_tracker_cache');
+    if (cached) {
+      const parsed = JSON.parse(cached);
+      if (Array.isArray(parsed) && parsed.length > 0 && trackerItems.length === 0) {
+        trackerItems = parsed;
+        renderKanban();
+      }
+    }
+  } catch (e) {}
+
   try {
     const res = await fetch('/api/tracker');
     if (!res.ok) return;
     trackerItems = await res.json();
+    try {
+      localStorage.setItem('academia_tracker_cache', JSON.stringify(trackerItems));
+    } catch (e) {}
     renderKanban();
   } catch (e) {
-    console.error('Failed to load tracker items:', e);
+    console.warn('Could not contact /api/tracker, rendering local pipeline state:', e);
+    renderKanban();
   }
 }
 
@@ -450,36 +474,79 @@ function renderKanban() {
         </div>
       `;
     } else {
-      col.innerHTML = items.map(item => `
-        <div class="kanban-card" id="track-${item.id}" draggable="true" ondragstart="onKanbanDragStart(event, '${item.id}')">
-          <div class="kanban-card-title">${escapeHtml(item.title)}</div>
-          <div class="kanban-card-inst">${escapeHtml(item.institute_name)}</div>
-          ${item.deadline ? `<div class="kanban-meta-item">⏳ Deadline: <strong>${formatDateDisplay(item.deadline)}</strong></div>` : ''}
-          ${item.portal_url ? `
-            <div class="kanban-meta-item">
-              <a href="${item.portal_url}" target="_blank" rel="noopener" style="color:var(--accent-cyan); text-decoration:none;">🔗 Open Portal</a>
-            </div>
-          ` : ''}
-          ${item.login_notes ? `<div class="kanban-notes-preview"><strong>Login/App ID:</strong> ${escapeHtml(item.login_notes)}</div>` : ''}
-          ${item.custom_notes ? `<div class="kanban-notes-preview"><strong>Notes:</strong> ${escapeHtml(item.custom_notes)}</div>` : ''}
+      col.innerHTML = items.map(item => {
+        const stageIdx = STAGES_ORDER.indexOf(item.stage);
+        const prevStage = stageIdx > 0 ? STAGES_ORDER[stageIdx - 1] : null;
+        const nextStage = stageIdx < STAGES_ORDER.length - 1 ? STAGES_ORDER[stageIdx + 1] : null;
 
-          <div class="kanban-actions-row">
-            <select class="btn-stage-move" onchange="updateTrackerStage('${item.id}', this.value)" title="Move application stage">
-              <option value="Interested" ${item.stage === 'Interested' ? 'selected' : ''}>💡 Interested</option>
-              <option value="Preparing Documents" ${item.stage === 'Preparing Documents' ? 'selected' : ''}>📝 Preparing Docs</option>
-              <option value="Applied" ${item.stage === 'Applied' ? 'selected' : ''}>📤 Applied</option>
-              <option value="Interview/Written Test" ${item.stage === 'Interview/Written Test' ? 'selected' : ''}>🎯 Interview</option>
-              <option value="Selected" ${item.stage === 'Selected' ? 'selected' : ''}>🎉 Selected</option>
-            </select>
-            <button class="btn-micro" style="color:var(--urgent-red);" onclick="deleteTrackerItem('${item.id}')" title="Delete from pipeline">✕</button>
+        return `
+          <div class="kanban-card" id="track-${item.id}" draggable="true" ondragstart="onKanbanDragStart(event, '${item.id}')">
+            <div class="kanban-card-title">${escapeHtml(item.title)}</div>
+            <div class="kanban-card-inst">${escapeHtml(item.institute_name)}</div>
+            ${item.deadline ? `<div class="kanban-meta-item">⏳ Deadline: <strong>${formatDateDisplay(item.deadline)}</strong></div>` : ''}
+            ${item.portal_url ? `
+              <div class="kanban-meta-item">
+                <a href="${item.portal_url}" target="_blank" rel="noopener" style="color:var(--accent-cyan); text-decoration:none;">🔗 Open Portal</a>
+              </div>
+            ` : ''}
+            ${item.login_notes ? `<div class="kanban-notes-preview"><strong>Login/App ID:</strong> ${escapeHtml(item.login_notes)}</div>` : ''}
+            ${item.custom_notes ? `<div class="kanban-notes-preview"><strong>Notes:</strong> ${escapeHtml(item.custom_notes)}</div>` : ''}
+
+            <!-- 1-Click Sequential Stage Navigation Buttons -->
+            <div class="kanban-stage-nav">
+              ${prevStage ? `
+                <button class="btn-step-prev" onclick="moveStagePrev('${item.id}')" title="Move back to ${prevStage}">
+                  ◀ Back
+                </button>
+              ` : '<span style="flex:1;"></span>'}
+              
+              ${nextStage ? `
+                <button class="btn-step-next" onclick="moveStageNext('${item.id}')" title="Advance to ${nextStage}">
+                  Next Stage ▶
+                </button>
+              ` : '<span class="status-selected">🏆 Accepted!</span>'}
+            </div>
+
+            <!-- Stage Jump Dropdown & Delete -->
+            <div class="kanban-actions-row">
+              <select class="btn-stage-move" onchange="updateTrackerStage('${item.id}', this.value)" title="Jump directly to any pipeline stage" onclick="event.stopPropagation()">
+                <option value="Interested" ${item.stage === 'Interested' ? 'selected' : ''}>💡 Interested</option>
+                <option value="Preparing Documents" ${item.stage === 'Preparing Documents' ? 'selected' : ''}>📝 Preparing SOP</option>
+                <option value="Applied" ${item.stage === 'Applied' ? 'selected' : ''}>📤 Applied</option>
+                <option value="Interview/Written Test" ${item.stage === 'Interview/Written Test' ? 'selected' : ''}>🎯 Interview</option>
+                <option value="Selected" ${item.stage === 'Selected' ? 'selected' : ''}>🏆 Selected</option>
+              </select>
+              <button class="btn-card-del" onclick="deleteTrackerItem('${item.id}')" title="Remove from pipeline">✕</button>
+            </div>
           </div>
-        </div>
-      `).join('');
+        `;
+      }).join('');
     }
   });
 
   if (window.lucide) lucide.createIcons();
 }
+
+function moveStageNext(id) {
+  const item = trackerItems.find(t => t.id === id);
+  if (!item) return;
+  const idx = STAGES_ORDER.indexOf(item.stage);
+  if (idx < STAGES_ORDER.length - 1) {
+    updateTrackerStage(id, STAGES_ORDER[idx + 1]);
+  }
+}
+
+function moveStagePrev(id) {
+  const item = trackerItems.find(t => t.id === id);
+  if (!item) return;
+  const idx = STAGES_ORDER.indexOf(item.stage);
+  if (idx > 0) {
+    updateTrackerStage(id, STAGES_ORDER[idx - 1]);
+  }
+}
+
+window.moveStageNext = moveStageNext;
+window.moveStagePrev = moveStagePrev;
 
 // Drag & drop handlers for Kanban board
 let draggedTrackerId = null;
@@ -530,51 +597,67 @@ async function toggleTrackOpportunity(oppId) {
   const existing = trackerItems.find(t => t.opportunity_id === oppId || t.title === opp.title);
   if (existing) {
     // Delete from tracker
-    await fetch(`/api/tracker/${existing.id}`, { method: 'DELETE' });
-    showToast('Removed from Application Pipeline');
+    await deleteTrackerItem(existing.id);
   } else {
     // Add to tracker
-    await fetch('/api/tracker', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        opportunity_id: opp.id,
-        title: opp.title,
-        institute_name: opp.institute_name,
-        category: opp.category,
-        opportunity_type: opp.opportunity_type,
-        stage: 'Interested',
-        deadline: opp.last_date_parsed || opp.last_date,
-        portal_url: opp.link,
-        custom_notes: `Discovered on portal. Stipend: ${opp.stipend_salary || 'N/A'}`
-      })
-    });
-    showToast('Added to Application Pipeline!');
-  }
+    const newEntry = {
+      id: `track-${Date.now()}`,
+      opportunity_id: opp.id,
+      title: opp.title,
+      institute_name: opp.institute_name,
+      category: opp.category,
+      opportunity_type: opp.opportunity_type,
+      stage: 'Interested',
+      deadline: opp.last_date_parsed || opp.last_date,
+      portal_url: opp.link,
+      custom_notes: `Discovered on portal. Stipend: ${opp.stipend_salary || 'N/A'}`
+    };
 
-  await loadTracker();
-  await loadStats();
-  renderOpportunities();
+    // Optimistic local add
+    trackerItems.unshift(newEntry);
+    try {
+      localStorage.setItem('academia_tracker_cache', JSON.stringify(trackerItems));
+    } catch (e) {}
+    renderKanban();
+    renderOpportunities();
+    showToast('Added to Application Pipeline!');
+
+    try {
+      await fetch('/api/tracker', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(newEntry)
+      });
+      await loadTracker();
+      await loadStats();
+    } catch (e) {
+      console.warn('Saved pipeline entry locally');
+    }
+  }
 }
 
 async function updateTrackerStage(id, newStage) {
   // 1. Instant optimistic UI update
   const item = trackerItems.find(t => t.id === id);
-  const oldStage = item ? item.stage : null;
-  if (item) {
-    item.stage = newStage;
-    renderKanban();
-  }
+  if (!item) return;
+  const oldStage = item.stage;
+  item.stage = newStage;
+  item.updated_at = new Date().toISOString();
 
+  // Save in local cache and re-render instantly
   try {
-    // 2. Persist to server using fast dedicated POST endpoint first
+    localStorage.setItem('academia_tracker_cache', JSON.stringify(trackerItems));
+  } catch (e) {}
+  renderKanban();
+
+  // 2. Persist to server
+  try {
     let res = await fetch('/api/tracker/stage', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ id, stage: newStage })
     });
 
-    // If dedicated route returned error, fallback to PUT /api/tracker/:id
     if (!res.ok) {
       res = await fetch(`/api/tracker/${id}`, {
         method: 'PUT',
@@ -583,33 +666,33 @@ async function updateTrackerStage(id, newStage) {
       });
     }
 
-    if (!res.ok) {
-      throw new Error(`Server returned HTTP ${res.status}`);
+    if (res.ok) {
+      showToast(`Application moved to "${newStage}"`);
+    } else {
+      showToast(`Moved to "${newStage}" (saved locally)`);
     }
-
-    showToast(`Moved application to "${newStage}"`);
-    await loadTracker();
-    await loadStats();
+    loadStats();
   } catch (e) {
-    console.error('Failed to update stage:', e);
-    showToast('Failed to update stage. Please restart server with start_server.bat', true);
-    if (item && oldStage) {
-      item.stage = oldStage;
-      renderKanban();
-    }
+    console.warn('Persisted stage update locally:', e);
+    showToast(`Moved to "${newStage}" (saved in browser)`);
   }
 }
 
 async function deleteTrackerItem(id) {
   if (!confirm('Remove this application from pipeline?')) return;
+  trackerItems = trackerItems.filter(t => t.id !== id);
+  try {
+    localStorage.setItem('academia_tracker_cache', JSON.stringify(trackerItems));
+  } catch (e) {}
+  renderKanban();
+  loadStats();
+  renderOpportunities();
+
   try {
     await fetch(`/api/tracker/${id}`, { method: 'DELETE' });
-    showToast('Application removed');
-    loadTracker();
-    loadStats();
-    renderOpportunities();
+    showToast('Application removed from pipeline');
   } catch (e) {
-    showToast('Failed to delete item', true);
+    showToast('Removed from pipeline (local)');
   }
 }
 
