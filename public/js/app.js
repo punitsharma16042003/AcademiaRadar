@@ -72,13 +72,24 @@ function switchTab(tabName) {
   }
 
   if (tabName === 'tracker') {
-    renderKanban();
+    if (trackerItems.length === 0) {
+      loadTracker().then(() => renderKanban());
+    } else {
+      renderKanban();
+    }
   } else if (tabName === 'institutes') {
-    renderInstitutesGrid();
+    if (institutes.length === 0) {
+      loadInstitutes().then(() => renderInstitutesGrid());
+    } else {
+      renderInstitutesGrid();
+    }
   }
 
-  if (window.lucide) lucide.createIcons();
+  if (window.lucide) {
+    lucide.createIcons();
+  }
 }
+window.switchTab = switchTab;
 
 // View toggle (Cards vs Table)
 function setViewMode(mode) {

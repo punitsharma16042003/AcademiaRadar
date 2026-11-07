@@ -619,6 +619,29 @@ body::before {
 }
 
 /* ==========================================================================
+   TAB VIEW CONTAINERS (Exclusive View Switching)
+   ========================================================================== */
+.tab-view {
+  display: none !important;
+}
+
+.tab-view.active {
+  display: block !important;
+  animation: fadeInTabView 0.22s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@keyframes fadeInTabView {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* ==========================================================================
    MAIN CONTAINER & SKEUOMORPHIC STATS MODULES
    ========================================================================== */
 .main-container {
