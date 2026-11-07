@@ -435,38 +435,93 @@ function renderKanban() {
     const counter = document.getElementById(s.countId);
     if (!col) return;
 
+    // Attach drag and drop listeners to column dropzone
+    col.ondragover = onKanbanDragOver;
+    col.ondragleave = onKanbanDragLeave;
+    col.ondrop = (e) => onKanbanDrop(e, s.stage);
+
     const items = trackerItems.filter(item => item.stage === s.stage);
     if (counter) counter.textContent = items.length;
 
-    col.innerHTML = items.map(item => `
-      <div class="kanban-card" id="track-${item.id}">
-        <div class="kanban-card-title">${escapeHtml(item.title)}</div>
-        <div class="kanban-card-inst">${escapeHtml(item.institute_name)}</div>
-        ${item.deadline ? `<div class="kanban-meta-item">⏳ Deadline: <strong>${formatDateDisplay(item.deadline)}</strong></div>` : ''}
-        ${item.portal_url ? `
-          <div class="kanban-meta-item">
-            <a href="${item.portal_url}" target="_blank" rel="noopener" style="color:var(--accent-cyan); text-decoration:none;">🔗 Open Portal</a>
-          </div>
-        ` : ''}
-        ${item.login_notes ? `<div class="kanban-notes-preview"><strong>Login/App ID:</strong> ${escapeHtml(item.login_notes)}</div>` : ''}
-        ${item.custom_notes ? `<div class="kanban-notes-preview"><strong>Notes:</strong> ${escapeHtml(item.custom_notes)}</div>` : ''}
-
-        <div class="kanban-actions-row">
-          <select class="btn-stage-move" onchange="updateTrackerStage('${item.id}', this.value)">
-            <option value="Interested" ${item.stage === 'Interested' ? 'selected' : ''}>Interested</option>
-            <option value="Preparing Documents" ${item.stage === 'Preparing Documents' ? 'selected' : ''}>Preparing Docs</option>
-            <option value="Applied" ${item.stage === 'Applied' ? 'selected' : ''}>Applied</option>
-            <option value="Interview/Written Test" ${item.stage === 'Interview/Written Test' ? 'selected' : ''}>Interview</option>
-            <option value="Selected" ${item.stage === 'Selected' ? 'selected' : ''}>Selected</option>
-          </select>
-          <button class="btn-micro" style="color:var(--urgent-red);" onclick="deleteTrackerItem('${item.id}')" title="Delete">✕</button>
+    if (items.length === 0) {
+      col.innerHTML = `
+        <div class="kanban-empty-slot">
+          <span>Drop or move applications here</span>
         </div>
-      </div>
-    `).join('');
+      `;
+    } else {
+      col.innerHTML = items.map(item => `
+        <div class="kanban-card" id="track-${item.id}" draggable="true" ondragstart="onKanbanDragStart(event, '${item.id}')">
+          <div class="kanban-card-title">${escapeHtml(item.title)}</div>
+          <div class="kanban-card-inst">${escapeHtml(item.institute_name)}</div>
+          ${item.deadline ? `<div class="kanban-meta-item">⏳ Deadline: <strong>${formatDateDisplay(item.deadline)}</strong></div>` : ''}
+          ${item.portal_url ? `
+            <div class="kanban-meta-item">
+              <a href="${item.portal_url}" target="_blank" rel="noopener" style="color:var(--accent-cyan); text-decoration:none;">🔗 Open Portal</a>
+            </div>
+          ` : ''}
+          ${item.login_notes ? `<div class="kanban-notes-preview"><strong>Login/App ID:</strong> ${escapeHtml(item.login_notes)}</div>` : ''}
+          ${item.custom_notes ? `<div class="kanban-notes-preview"><strong>Notes:</strong> ${escapeHtml(item.custom_notes)}</div>` : ''}
+
+          <div class="kanban-actions-row">
+            <select class="btn-stage-move" onchange="updateTrackerStage('${item.id}', this.value)" title="Move application stage">
+              <option value="Interested" ${item.stage === 'Interested' ? 'selected' : ''}>💡 Interested</option>
+              <option value="Preparing Documents" ${item.stage === 'Preparing Documents' ? 'selected' : ''}>📝 Preparing Docs</option>
+              <option value="Applied" ${item.stage === 'Applied' ? 'selected' : ''}>📤 Applied</option>
+              <option value="Interview/Written Test" ${item.stage === 'Interview/Written Test' ? 'selected' : ''}>🎯 Interview</option>
+              <option value="Selected" ${item.stage === 'Selected' ? 'selected' : ''}>🎉 Selected</option>
+            </select>
+            <button class="btn-micro" style="color:var(--urgent-red);" onclick="deleteTrackerItem('${item.id}')" title="Delete from pipeline">✕</button>
+          </div>
+        </div>
+      `).join('');
+    }
   });
 
   if (window.lucide) lucide.createIcons();
 }
+
+// Drag & drop handlers for Kanban board
+let draggedTrackerId = null;
+
+function onKanbanDragStart(e, id) {
+  draggedTrackerId = id;
+  e.dataTransfer.setData('text/plain', id);
+  e.dataTransfer.effectAllowed = 'move';
+}
+
+function onKanbanDragOver(e) {
+  e.preventDefault();
+  e.dataTransfer.dropEffect = 'move';
+  const dropzone = e.currentTarget;
+  if (dropzone && !dropzone.classList.contains('drag-over')) {
+    dropzone.classList.add('drag-over');
+  }
+}
+
+function onKanbanDragLeave(e) {
+  const dropzone = e.currentTarget;
+  if (dropzone) {
+    dropzone.classList.remove('drag-over');
+  }
+}
+
+function onKanbanDrop(e, targetStage) {
+  e.preventDefault();
+  const dropzone = e.currentTarget;
+  if (dropzone) {
+    dropzone.classList.remove('drag-over');
+  }
+  const id = e.dataTransfer.getData('text/plain') || draggedTrackerId;
+  if (id && targetStage) {
+    updateTrackerStage(id, targetStage);
+  }
+}
+
+window.onKanbanDragStart = onKanbanDragStart;
+window.onKanbanDragOver = onKanbanDragOver;
+window.onKanbanDragLeave = onKanbanDragLeave;
+window.onKanbanDrop = onKanbanDrop;
 
 async function toggleTrackOpportunity(oppId) {
   const opp = opportunities.find(o => o.id === oppId);
@@ -504,15 +559,31 @@ async function toggleTrackOpportunity(oppId) {
 
 async function updateTrackerStage(id, newStage) {
   try {
-    await fetch(`/api/tracker/${id}`, {
+    // 1. Instant optimistic UI update
+    const item = trackerItems.find(t => t.id === id);
+    if (item) {
+      item.stage = newStage;
+      renderKanban();
+    }
+
+    // 2. Persist to server
+    const res = await fetch(`/api/tracker/${id}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ stage: newStage })
     });
-    showToast(`Application moved to ${newStage}`);
-    loadTracker();
+
+    if (!res.ok) {
+      throw new Error(`Server returned HTTP ${res.status}`);
+    }
+
+    showToast(`Moved application to "${newStage}"`);
+    await loadTracker();
+    await loadStats();
   } catch (e) {
+    console.error('Failed to update stage:', e);
     showToast('Failed to update stage', true);
+    await loadTracker();
   }
 }
 

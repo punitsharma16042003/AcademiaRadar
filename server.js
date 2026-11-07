@@ -416,6 +416,10 @@ const server = http.createServer(async (req, res) => {
       const update = db.prepare(`
         UPDATE application_tracker
         SET stage = COALESCE(?, stage),
+            title = COALESCE(?, title),
+            institute_name = COALESCE(?, institute_name),
+            deadline = COALESCE(?, deadline),
+            portal_url = COALESCE(?, portal_url),
             login_notes = COALESCE(?, login_notes),
             custom_notes = COALESCE(?, custom_notes),
             applied_date = COALESCE(?, applied_date),
@@ -423,7 +427,18 @@ const server = http.createServer(async (req, res) => {
         WHERE id = ?
       `);
 
-      update.run(data.stage, data.login_notes, data.custom_notes, data.applied_date, now, id);
+      update.run(
+        data.stage !== undefined ? data.stage : null,
+        data.title !== undefined ? data.title : null,
+        data.institute_name !== undefined ? data.institute_name : null,
+        data.deadline !== undefined ? data.deadline : null,
+        data.portal_url !== undefined ? data.portal_url : null,
+        data.login_notes !== undefined ? data.login_notes : null,
+        data.custom_notes !== undefined ? data.custom_notes : null,
+        data.applied_date !== undefined ? data.applied_date : null,
+        now,
+        id
+      );
       return sendJson(res, 200, { success: true });
     }
 

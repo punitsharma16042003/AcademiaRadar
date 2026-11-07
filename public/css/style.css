@@ -1316,6 +1316,29 @@ body::before {
   flex: 1;
   background: var(--inset-slot);
   box-shadow: inset 0 2px 6px rgba(0, 0, 0, 0.4);
+  transition: background 0.15s ease, border-color 0.15s ease;
+  min-height: 250px;
+  border-radius: 0 0 var(--radius-sm) var(--radius-sm);
+}
+
+.kanban-dropzone.drag-over {
+  background: rgba(0, 210, 240, 0.12) !important;
+  outline: 2px dashed var(--accent-cyan);
+  outline-offset: -3px;
+}
+
+.kanban-empty-slot {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px dashed rgba(255, 255, 255, 0.15);
+  border-radius: var(--radius-sm);
+  padding: 24px 12px;
+  color: var(--text-dim);
+  font-size: 0.74rem;
+  font-style: italic;
+  text-align: center;
+  min-height: 70px;
 }
 
 .kanban-card {
@@ -1330,6 +1353,12 @@ body::before {
     inset 0 1px 0 rgba(255, 255, 255, 0.35);
   position: relative;
   transition: transform 0.15s, box-shadow 0.15s;
+  cursor: grab;
+  user-select: none;
+}
+
+.kanban-card:active {
+  cursor: grabbing;
 }
 
 .kanban-card:hover {
