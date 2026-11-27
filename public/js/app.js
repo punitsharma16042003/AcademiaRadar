@@ -14,6 +14,34 @@ let staticOpportunities = [];
 
 const TRACKER_CACHE_KEY = 'academia_tracker_cache';
 const CUSTOM_OPPS_KEY = 'academia_custom_opps';
+const CRAWLED_OPPS_KEY = 'academia_crawled_opps';
+
+const BROWSER_MONTH_MAP = {
+  jan: '01', january: '01',
+  feb: '02', february: '02',
+  mar: '03', march: '03',
+  apr: '04', april: '04',
+  may: '05',
+  jun: '06', june: '06',
+  jul: '07', july: '07',
+  aug: '08', august: '08',
+  sep: '09', september: '09',
+  oct: '10', october: '10',
+  nov: '11', november: '11',
+  dec: '12', december: '12'
+};
+
+const browserScanStatus = {
+  isScanning: false,
+  currentIndex: 0,
+  total: 0,
+  currentInstitute: '',
+  itemsFound: 0,
+  errors: 0,
+  startedAt: null,
+  finishedAt: null,
+  recentLogs: []
+};
 
 function detectBackendMode() {
   if (staticMode !== null) return Promise.resolve(staticMode);
@@ -101,9 +129,41 @@ function saveLocalTrackerItems(items) {
   } catch (e) {}
 }
 
+function getLocalCrawledOpportunities() {
+  try {
+    const raw = localStorage.getItem(CRAWLED_OPPS_KEY);
+    const parsed = raw ? JSON.parse(raw) : [];
+    return Array.isArray(parsed) ? parsed : [];
+  } catch (e) {
+    return [];
+  }
+}
+
+function saveLocalCrawledOpportunities(items) {
+  try {
+    localStorage.setItem(CRAWLED_OPPS_KEY, JSON.stringify(items));
+  } catch (e) {}
+}
+
+function upsertBrowserCrawledOpportunities(newItems) {
+  if (!Array.isArray(newItems) || newItems.length === 0) return;
+  const todayStr = new Date().toISOString().split('T')[0];
+  const existing = getLocalCrawledOpportunities().filter(o => !o.last_date_parsed || o.last_date_parsed >= todayStr);
+  const byId = new Map(existing.map(item => [item.id, item]));
+  for (const item of newItems) {
+    byId.set(item.id, item);
+  }
+  saveLocalCrawledOpportunities(Array.from(byId.values()));
+}
+
 function getActiveStaticOpportunities() {
-  const combined = [...getLocalCustomOpportunities(), ...staticOpportunities];
-  return combined
+  const byId = new Map();
+  // Priority order: snapshot < browser-crawled < user-added custom
+  for (const item of staticOpportunities) byId.set(item.id, item);
+  for (const item of getLocalCrawledOpportunities()) byId.set(item.id, item);
+  for (const item of getLocalCustomOpportunities()) byId.set(item.id, item);
+
+  return Array.from(byId.values())
     .map(o => {
       const u = calculateUrgency(o.last_date_parsed);
       return {
@@ -115,7 +175,351 @@ function getActiveStaticOpportunities() {
     .filter(o => o.urgencyLevel !== 'expired');
 }
 
-function applyStaticScannerUi() {
+function addBrowserLog(msg) {
+  const time = new Date().toLocaleTimeString();
+  browserScanStatus.recentLogs.unshift(`[${time}] ${msg}`);
+  if (browserScanStatus.recentLogs.length > 50) {
+    browserScanStatus.recentLogs.pop();
+  }
+}
+
+function extractDatesFromTextBrowser(text) {
+  let startDate = '';
+  let lastDate = '';
+  let lastDateParsed = '';
+  if (!text) return { startDate, lastDate, lastDateParsed };
+
+  const deadlineMatch = text.match(/(?:last\s*date(?:\s*extended)?(?:\s*till|\s*to)?|closing\s*date|deadline|valid\s*(?:up\s*to|till)|apply\s*(?:by|before)|walk[- ]in\s*(?:on|date))\s*[:\-–]?\s*([0-9a-zA-Z\s,./\-–]{5,35})/i);
+  const startMatch = text.match(/(?:start\s*date|commencement\s*date|opening\s*date|date\s*of\s*notification|published\s*on)\s*[:\-–]?\s*([0-9a-zA-Z\s,./\-–]{5,35})/i);
+
+  function parseDateString(str) {
+    if (!str) return { raw: '', parsed: '' };
+    let cleaned = str.trim().replace(/(\d{1,2})\.(\d{1,2})\.(202[5-9])/, '$1-$2-$3');
+    cleaned = cleaned.replace(/(\d{1,2})\/(\d{1,2})\/(202[5-9])/, '$1-$2-$3');
+
+    const dmy = cleaned.match(/\b(\d{1,2})[-/.](\d{1,2})[-/.](202[5-9])\b/);
+    if (dmy) {
+      const day = dmy[1].padStart(2, '0');
+      const month = dmy[2].padStart(2, '0');
+      const year = dmy[3];
+      return { raw: `${day}-${month}-${year}`, parsed: `${year}-${month}-${day}` };
+    }
+
+    const monthText = cleaned.match(/\b(\d{1,2})(?:st|nd|rd|th)?\s+([A-Za-z]+)\s+(202[5-9])\b/);
+    if (monthText) {
+      const day = monthText[1].padStart(2, '0');
+      const mStr = monthText[2].toLowerCase().substring(0, 3);
+      const mNum = BROWSER_MONTH_MAP[mStr];
+      const year = monthText[3];
+      if (mNum) {
+        return { raw: `${day} ${monthText[2]} ${year}`, parsed: `${year}-${mNum}-${day}` };
+      }
+    }
+
+    const mdy = cleaned.match(/\b([A-Za-z]+)\s+(\d{1,2})(?:st|nd|rd|th)?\s*,?\s+(202[5-9])\b/);
+    if (mdy) {
+      const mStr = mdy[1].toLowerCase().substring(0, 3);
+      const mNum = BROWSER_MONTH_MAP[mStr];
+      const day = mdy[2].padStart(2, '0');
+      const year = mdy[3];
+      if (mNum) {
+        return { raw: `${day} ${mdy[1]} ${year}`, parsed: `${year}-${mNum}-${day}` };
+      }
+    }
+
+    if (/rolling|throughout|continuous/i.test(cleaned)) {
+      return { raw: 'Rolling / Open', parsed: '2027-12-31' };
+    }
+
+    return { raw: '', parsed: '' };
+  }
+
+  if (deadlineMatch) {
+    const res = parseDateString(deadlineMatch[1]);
+    lastDate = res.raw;
+    lastDateParsed = res.parsed;
+  }
+
+  if (startMatch) {
+    const res = parseDateString(startMatch[1]);
+    startDate = res.parsed || res.raw;
+  }
+
+  if (!lastDate) {
+    const general = parseDateString(text);
+    if (general.raw) {
+      lastDate = general.raw;
+      lastDateParsed = general.parsed;
+    }
+  }
+
+  return { startDate, lastDate, lastDateParsed };
+}
+
+function classifyOpportunityTypeBrowser(title, desc) {
+  function matchType(text) {
+    const clean = (text || '').replace(/\b\S+\.pdf\b/gi, ' ').toLowerCase();
+    if (/(?:post[- ]?doc|postdoctoral|\bipdf\b|early\s*career\s*fellow|research\s*associate)/i.test(clean)) {
+      return 'Postdoctoral Fellowship';
+    }
+    if (/(?:\bjrf\b|\bsrf\b|project\s*associate|project\s*assistant|research\s*fellow|junior\s*research|senior\s*research|project\s*fellow|project\s*scientist)/i.test(clean)) {
+      return 'JRF/SRF/Project Fellow';
+    }
+    if (/(?:\bph\.?d\b|\bdoctorate\b|\bdoctoral\b|m\.?s\.?\s*\(research\)|i-phd|joint\s*phd)/i.test(clean)) {
+      return 'PhD Admission';
+    }
+    if (/(?:faculty|assistant\s*professor|associate\s*professor|rolling\s*advertisement|\bprofessor\b)/i.test(clean)) {
+      return 'Faculty Position';
+    }
+    if (/(?:scientist|technical\s*officer|scientific\s*officer|technical\s*assistant|engineer)/i.test(clean)) {
+      return 'Scientist/Technical Staff';
+    }
+    if (/(?:internship|summer\s*fellowship|winter\s*school|visiting\s*student|trainee)/i.test(clean)) {
+      return 'Research Internship';
+    }
+    return null;
+  }
+
+  return matchType(title) || matchType(desc) || 'PhD Admission';
+}
+
+function buildBrowserOpportunity(fullUrl, anchorText, surroundingText, institute) {
+  const dates = extractDatesFromTextBrowser(surroundingText);
+  const oppType = classifyOpportunityTypeBrowser(anchorText, surroundingText);
+  const todayStr = new Date().toISOString().split('T')[0];
+
+  if (dates.lastDateParsed && dates.lastDateParsed < todayStr) {
+    return null;
+  }
+
+  let hash = 0;
+  for (let i = 0; i < fullUrl.length; i++) {
+    hash = ((hash << 5) - hash + fullUrl.charCodeAt(i)) | 0;
+  }
+  const id = `web-${institute.id}-${Math.abs(hash).toString(36)}`;
+
+  return {
+    id,
+    institute_id: institute.id,
+    institute_name: institute.name,
+    category: institute.category,
+    opportunity_type: oppType,
+    title: anchorText.slice(0, 250),
+    department: institute.sub_category || institute.subCategory || 'Research Department',
+    description: `Discovered on official portal. Notice: "${anchorText}". Context: ${surroundingText.slice(0, 200)}...`,
+    advertisement_no: `AUTO/${institute.short_name || institute.shortName || 'PORTAL'}/${new Date().getFullYear()}`,
+    link: fullUrl,
+    pdf_url: fullUrl.toLowerCase().endsWith('.pdf') ? fullUrl : '',
+    start_date: dates.startDate || todayStr,
+    last_date: dates.lastDate || 'Check Official Notification',
+    last_date_parsed: dates.lastDateParsed || '2026-12-31',
+    stipend_salary: oppType.includes('JRF') ? '₹37,000 + HRA as per MoE/CSIR norms' : 'As per institute & project norms',
+    eligibility: 'See official advertisement brochure for detailed criteria',
+    is_active: 1,
+    is_custom: 0,
+    city: institute.city || '',
+    institute_state: institute.state || '',
+    inst_website: institute.website || '',
+    created_at: new Date().toISOString()
+  };
+}
+
+function parseFetchedPortalItems(content, format, institute) {
+  const items = [];
+  if (!content) return items;
+
+  const seenUrls = new Set();
+  const searchKeywords = /(ph\.?d|admission|recruitment|vacancy|advertisement|postdoc|fellowship|project\s*staff|jrf|srf|scientist|assistant\s*professor)/i;
+  const clutterKeywords = /login|home|contact|terms|privacy|sitemap|download\s*adobe/i;
+  const baseUrl = institute.recruitment_url || institute.phd_url || institute.website;
+
+  if (format === 'html') {
+    const linkRegex = /<a\s+(?:[^>]*?\s+)?href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi;
+    let match;
+    while ((match = linkRegex.exec(content)) !== null) {
+      const rawUrl = match[1].trim();
+      const anchorText = match[2].replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+      if (!anchorText || anchorText.length < 10) continue;
+      if (!searchKeywords.test(anchorText) || clutterKeywords.test(anchorText)) continue;
+
+      let fullUrl = rawUrl;
+      try {
+        fullUrl = new URL(rawUrl, baseUrl).href;
+      } catch (e) {}
+      if (!/^https?:\/\//i.test(fullUrl) || seenUrls.has(fullUrl)) continue;
+      seenUrls.add(fullUrl);
+
+      const windowStart = Math.max(0, match.index - 200);
+      const windowEnd = Math.min(content.length, match.index + match[0].length + 300);
+      const surroundingText = content.slice(windowStart, windowEnd).replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ');
+
+      const item = buildBrowserOpportunity(fullUrl, anchorText, surroundingText, institute);
+      if (item) items.push(item);
+      if (items.length >= 10) break;
+    }
+    return items;
+  }
+
+  // Markdown mode (from Jina Reader): scan [text](url) with balanced parentheses, excluding ![image](url)
+  const mdPrefixRegex = /\[([^\]\n]{8,240})\]\((https?:\/\/)/g;
+  let match;
+  while ((match = mdPrefixRegex.exec(content)) !== null) {
+    if (match.index > 0 && content[match.index - 1] === '!') continue;
+    const anchorText = match[1].replace(/[*_`~]/g, '').replace(/\s+/g, ' ').trim();
+    const urlStart = match.index + match[0].length - match[2].length;
+    let depth = 1;
+    let pos = urlStart;
+    while (pos < content.length && depth > 0) {
+      const ch = content[pos];
+      if (ch === '(') depth++;
+      else if (ch === ')') depth--;
+      else if (/\s/.test(ch)) break;
+      pos++;
+    }
+    const fullUrl = content.slice(urlStart, depth === 0 ? pos - 1 : pos).trim();
+
+    if (!anchorText || anchorText.length < 10) continue;
+    if (!searchKeywords.test(anchorText) || clutterKeywords.test(anchorText)) continue;
+    if (!/^https?:\/\//i.test(fullUrl) || seenUrls.has(fullUrl)) continue;
+    seenUrls.add(fullUrl);
+
+    const windowStart = Math.max(0, match.index - 180);
+    const windowEnd = Math.min(content.length, pos + 280);
+    const surroundingText = content
+      .slice(windowStart, windowEnd)
+      .replace(/\(https?:\/\/[^\s)]+(?:\([^\s)]*\)[^\s)]*)*\)/g, ' ')
+      .replace(/[*_`#]/g, ' ')
+      .replace(/\s+/g, ' ');
+
+    const item = buildBrowserOpportunity(fullUrl, anchorText, surroundingText, institute);
+    if (item) items.push(item);
+    if (items.length >= 10) break;
+  }
+
+  return items;
+}
+
+async function fetchPortalViaBrowserRelays(targetUrl) {
+  const relays = [
+    { name: 'jina', format: 'markdown', url: `https://r.jina.ai/${targetUrl}` },
+    { name: 'allorigins', format: 'html', url: `https://api.allorigins.win/raw?url=${encodeURIComponent(targetUrl)}` },
+    { name: 'codetabs', format: 'html', url: `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(targetUrl)}` }
+  ];
+
+  let lastErr = 'Unreachable';
+  for (const relay of relays) {
+    const ac = new AbortController();
+    const timer = setTimeout(() => ac.abort(), 8000);
+    try {
+      const res = await fetch(relay.url, { signal: ac.signal });
+      if (!res.ok) {
+        lastErr = `HTTP ${res.status} via ${relay.name}`;
+        continue;
+      }
+      const text = await res.text();
+      if (text && text.length > 80) {
+        return { text, format: relay.format, relay: relay.name };
+      }
+      lastErr = `Empty response via ${relay.name}`;
+    } catch (err) {
+      lastErr = err.name === 'AbortError' ? `Timed out via ${relay.name} (8s)` : `${err.message} (${relay.name})`;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+  throw new Error(lastErr);
+}
+
+async function browserScanSingleInstitute(institute) {
+  const urlToFetch = institute.recruitment_url || institute.phd_url || institute.website;
+  addBrowserLog(`Checking ${institute.name} at ${urlToFetch}...`);
+  renderScannerStatusUi(browserScanStatus);
+
+  try {
+    const { text, format, relay } = await fetchPortalViaBrowserRelays(urlToFetch);
+    const items = parseFetchedPortalItems(text, format, institute);
+    if (items.length > 0) {
+      upsertBrowserCrawledOpportunities(items);
+      addBrowserLog(`✓ Found ${items.length} opportunities for ${institute.short_name || institute.name} (via ${relay})`);
+    } else {
+      addBrowserLog(`✓ Connected to ${institute.short_name || institute.name} via ${relay} (portal checked, no new links matched)`);
+    }
+    renderScannerStatusUi(browserScanStatus);
+    return { success: true, itemsCount: items.length };
+  } catch (err) {
+    addBrowserLog(`⚠ ${institute.short_name || institute.name}: ${err.message}`);
+    renderScannerStatusUi(browserScanStatus);
+    return { success: false, error: err.message };
+  }
+}
+
+async function runBrowserScan(categoryFilter = 'ALL', maxInstitutes = null) {
+  if (browserScanStatus.isScanning) {
+    showToast('A crawl is already running!');
+    return;
+  }
+
+  await loadStaticData();
+  let targetList = staticInstitutes;
+  if (categoryFilter && categoryFilter !== 'ALL') {
+    targetList = targetList.filter(i => i.category === categoryFilter);
+  }
+  if (maxInstitutes) {
+    targetList = targetList.slice(0, maxInstitutes);
+  }
+
+  browserScanStatus.isScanning = true;
+  browserScanStatus.currentIndex = 0;
+  browserScanStatus.total = targetList.length;
+  browserScanStatus.currentInstitute = '';
+  browserScanStatus.itemsFound = 0;
+  browserScanStatus.errors = 0;
+  browserScanStatus.startedAt = new Date().toISOString();
+  browserScanStatus.finishedAt = null;
+  addBrowserLog(`🚀 Starting browser live crawl across ${targetList.length} institutes${categoryFilter && categoryFilter !== 'ALL' ? ` (${categoryFilter})` : ''}...`);
+  renderScannerStatusUi(browserScanStatus);
+
+  const CONCURRENCY = 2;
+  for (let i = 0; i < targetList.length; i += CONCURRENCY) {
+    if (!browserScanStatus.isScanning) {
+      addBrowserLog('⏹ Scan stopped by user.');
+      break;
+    }
+
+    const chunk = targetList.slice(i, i + CONCURRENCY);
+    await Promise.all(chunk.map(async inst => {
+      if (!browserScanStatus.isScanning) return;
+      browserScanStatus.currentInstitute = inst.name;
+      browserScanStatus.currentIndex++;
+      renderScannerStatusUi(browserScanStatus);
+
+      const res = await browserScanSingleInstitute(inst);
+      if (res.success) {
+        browserScanStatus.itemsFound += res.itemsCount || 0;
+        if (res.itemsCount > 0) {
+          loadOpportunities();
+          loadStats();
+        }
+      } else {
+        browserScanStatus.errors++;
+      }
+      renderScannerStatusUi(browserScanStatus);
+    }));
+
+    if (browserScanStatus.isScanning) {
+      await new Promise(r => setTimeout(r, 350));
+    }
+  }
+
+  browserScanStatus.isScanning = false;
+  browserScanStatus.finishedAt = new Date().toISOString();
+  addBrowserLog(`✅ Scan finished! Checked: ${browserScanStatus.currentIndex}/${browserScanStatus.total}, Discovered: ${browserScanStatus.itemsFound}, Unreachable/Timeouts: ${browserScanStatus.errors}`);
+  renderScannerStatusUi(browserScanStatus);
+  loadOpportunities();
+  loadStats();
+}
+
+function renderScannerStatusUi(status) {
   const dot = document.getElementById('scanDot');
   const label = document.getElementById('scanLabel');
   const sub = document.getElementById('scanSub');
@@ -128,27 +532,51 @@ function applyStaticScannerUi() {
   const target = document.getElementById('currentTargetName');
   const startBtn = document.getElementById('startScanBtn');
   const stopBtn = document.getElementById('stopScanBtn');
-  const consoleLogs = document.getElementById('consoleLogs');
 
-  if (dot) dot.className = 'status-dot dot-idle';
-  if (label) label.textContent = 'Static Snapshot';
-  if (sub) sub.textContent = 'GitHub Pages • 253 Institutes';
-  if (title) title.textContent = 'Hosted Mode: Pre-Crawled Snapshot Active';
-  if (percent) percent.textContent = '100%';
-  if (fill) fill.style.width = '100%';
-  if (scanned) scanned.textContent = '253 / 253';
-  if (discovered) discovered.textContent = String(staticOpportunities.length || 0);
-  if (errors) errors.textContent = '0';
-  if (target) target.textContent = 'Local Node.js server required for live crawl';
-  if (startBtn) startBtn.disabled = false;
-  if (stopBtn) stopBtn.disabled = true;
-  if (consoleLogs) {
-    consoleLogs.innerHTML = [
-      '<div class="log-line">[GitHub Pages Mode] Serving pre-crawled active opportunities and 253 institutes snapshot.</div>',
-      '<div class="log-line text-muted">[Note] Browsers block direct cross-origin scraping of external .ac.in / .res.in portals.</div>',
-      '<div class="log-line text-muted">[Tip] To run live web crawls, clone the repo and run "node server.js" locally on http://localhost:5000.</div>'
-    ].join('');
+  if (status.isScanning) {
+    if (dot) dot.className = 'status-dot dot-scanning';
+    if (label) label.textContent = `Scanning: ${status.currentIndex} / ${status.total}`;
+    if (sub) sub.textContent = status.currentInstitute || 'Active';
+    if (title) title.textContent = `Crawler Running: ${status.currentInstitute || ''}`;
+
+    const pct = status.total > 0 ? Math.round((status.currentIndex / status.total) * 100) : 0;
+    if (percent) percent.textContent = `${pct}%`;
+    if (fill) fill.style.width = `${pct}%`;
+
+    if (scanned) scanned.textContent = `${status.currentIndex} / ${status.total}`;
+    if (discovered) discovered.textContent = status.itemsFound;
+    if (errors) errors.textContent = status.errors;
+    if (target) target.textContent = status.currentInstitute || '-';
+
+    if (startBtn) startBtn.disabled = true;
+    if (stopBtn) stopBtn.disabled = false;
+  } else {
+    if (dot) dot.className = 'status-dot dot-idle';
+    if (label) label.textContent = status.finishedAt ? 'Scan Finished' : 'Scanner: Ready';
+    if (sub) sub.textContent = '253 Institutes Database';
+    if (title) title.textContent = status.finishedAt ? 'Last Scan Completed' : 'Crawler Status: Idle';
+    if (scanned && status.total > 0) scanned.textContent = `${status.currentIndex} / ${status.total}`;
+    if (discovered && status.total > 0) discovered.textContent = status.itemsFound;
+    if (errors && status.total > 0) errors.textContent = status.errors;
+    if (startBtn) startBtn.disabled = false;
+    if (stopBtn) stopBtn.disabled = true;
   }
+
+  if (status.recentLogs && status.recentLogs.length > 0) {
+    const consoleLogs = document.getElementById('consoleLogs');
+    if (consoleLogs) {
+      consoleLogs.innerHTML = status.recentLogs.map(l => `<div class="log-line">${escapeHtml(l)}</div>`).join('');
+    }
+  }
+}
+
+function applyStaticScannerUi() {
+  if (browserScanStatus.recentLogs.length === 0) {
+    browserScanStatus.recentLogs = [
+      '[System Ready] Press "Start Full Scan" or "Scan" to crawl live institute portals directly from your browser.'
+    ];
+  }
+  renderScannerStatusUi(browserScanStatus);
 }
 
 function downloadBlobFile(content, filename, mimeType) {
@@ -640,11 +1068,25 @@ function filterInstitutes() {
 // Single institute live check
 async function scanSpecificInstitute(instId) {
   await detectBackendMode();
+  showToast('Initiating portal crawl for institute...');
   if (staticMode) {
-    showToast('Live portal crawling runs in the local Node.js server. Use the official links above in GitHub Pages mode.', true);
+    await loadStaticData();
+    const inst = staticInstitutes.find(i => i.id === instId);
+    if (!inst) {
+      showToast('Institute not found', true);
+      return;
+    }
+    const result = await browserScanSingleInstitute(inst);
+    if (result.success) {
+      showToast(`Scan complete! ${result.itemsCount} opportunities found.`);
+      loadOpportunities();
+      loadStats();
+    } else {
+      showToast(`Scan note: ${result.error || 'Portal check finished'}`, true);
+    }
     return;
   }
-  showToast('Initiating portal crawl for institute...');
+
   try {
     const res = await fetch(`./api/institutes/${instId}/scan`, { method: 'POST' });
     const result = await res.json();
@@ -977,56 +1419,7 @@ async function pollScanStatus() {
     const res = await fetch('./api/scan/status');
     if (!res.ok) return;
     const status = await res.json();
-
-    const dot = document.getElementById('scanDot');
-    const label = document.getElementById('scanLabel');
-    const sub = document.getElementById('scanSub');
-    const title = document.getElementById('scanStatusTitle');
-    const percent = document.getElementById('scanProgressPercent');
-    const fill = document.getElementById('progressBarFill');
-    const scanned = document.getElementById('scannedCount');
-    const discovered = document.getElementById('discoveredCount');
-    const errors = document.getElementById('errorsCount');
-    const target = document.getElementById('currentTargetName');
-
-    const startBtn = document.getElementById('startScanBtn');
-    const stopBtn = document.getElementById('stopScanBtn');
-
-    if (status.isScanning) {
-      dot.className = 'status-dot dot-scanning';
-      label.textContent = `Scanning: ${status.currentIndex} / ${status.total}`;
-      sub.textContent = status.currentInstitute || 'Active';
-
-      title.textContent = `Crawler Running: ${status.currentInstitute || ''}`;
-      const pct = status.total > 0 ? Math.round((status.currentIndex / status.total) * 100) : 0;
-      percent.textContent = `${pct}%`;
-      fill.style.width = `${pct}%`;
-
-      scanned.textContent = `${status.currentIndex} / ${status.total}`;
-      discovered.textContent = status.itemsFound;
-      errors.textContent = status.errors;
-      target.textContent = status.currentInstitute || '-';
-
-      if (startBtn) startBtn.disabled = true;
-      if (stopBtn) stopBtn.disabled = false;
-    } else {
-      dot.className = 'status-dot dot-idle';
-      label.textContent = status.finishedAt ? 'Scan Finished' : 'Scanner: Ready';
-      sub.textContent = '253 Institutes Database';
-
-      title.textContent = status.finishedAt ? 'Last Scan Completed' : 'Crawler Status: Idle';
-      if (startBtn) startBtn.disabled = false;
-      if (stopBtn) stopBtn.disabled = true;
-    }
-
-    // Append logs
-    if (status.recentLogs && status.recentLogs.length > 0) {
-      const consoleLogs = document.getElementById('consoleLogs');
-      if (consoleLogs) {
-        consoleLogs.innerHTML = status.recentLogs.map(l => `<div class="log-line">${escapeHtml(l)}</div>`).join('');
-      }
-    }
-
+    renderScannerStatusUi(status);
   } catch (e) {
     console.error('Error polling scanner:', e);
   }
@@ -1034,14 +1427,12 @@ async function pollScanStatus() {
 
 async function startQuickScan() {
   await detectBackendMode();
-  if (staticMode) {
-    switchTab('scanner');
-    applyStaticScannerUi();
-    showToast('Live portal crawling requires running "node server.js" locally.', true);
-    return;
-  }
   showToast('Starting portal scanner...');
   switchTab('scanner');
+  if (staticMode) {
+    runBrowserScan('ALL', 15);
+    return;
+  }
   await fetch('./api/scan/start', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -1051,14 +1442,12 @@ async function startQuickScan() {
 
 async function triggerCategoryScan(cat) {
   await detectBackendMode();
-  if (staticMode) {
-    switchTab('scanner');
-    applyStaticScannerUi();
-    showToast('Live portal crawling requires running "node server.js" locally.', true);
-    return;
-  }
   showToast(`Starting crawler for ${cat}...`);
   switchTab('scanner');
+  if (staticMode) {
+    runBrowserScan(cat, 10);
+    return;
+  }
   await fetch('./api/scan/start', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -1068,13 +1457,12 @@ async function triggerCategoryScan(cat) {
 
 async function startScanProcess() {
   await detectBackendMode();
-  if (staticMode) {
-    applyStaticScannerUi();
-    showToast('Live portal crawling requires running "node server.js" locally.', true);
-    return;
-  }
   const cat = document.getElementById('categoryFilter')?.value || 'ALL';
   showToast(`Starting full crawler run...`);
+  if (staticMode) {
+    runBrowserScan(cat, null);
+    return;
+  }
   await fetch('./api/scan/start', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -1084,7 +1472,15 @@ async function startScanProcess() {
 
 async function stopScanProcess() {
   await detectBackendMode();
-  if (staticMode) return;
+  if (staticMode) {
+    if (browserScanStatus.isScanning) {
+      browserScanStatus.isScanning = false;
+      addBrowserLog('⏹ Scan cancellation requested.');
+      renderScannerStatusUi(browserScanStatus);
+      showToast('Scan stopped');
+    }
+    return;
+  }
   await fetch('./api/scan/stop', { method: 'POST' });
   showToast('Scan stopped');
 }

@@ -25,7 +25,7 @@ function normalizeInstitute(inst) {
   };
 }
 
-function main() {
+function exportStaticData() {
   fs.mkdirSync(OUT_DIR, { recursive: true });
 
   const institutesPath = path.join(DATA_DIR, 'institutes.json');
@@ -111,6 +111,11 @@ function main() {
   );
 
   console.log(`Exported ${institutes.length} institutes and ${opportunities.length} active opportunities to public/data/`);
+  return { institutesCount: institutes.length, opportunitiesCount: opportunities.length };
 }
 
-main();
+if (require.main === module) {
+  exportStaticData();
+}
+
+module.exports = { exportStaticData };
