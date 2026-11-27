@@ -6,16 +6,178 @@ let currentTab = 'opportunities';
 let viewMode = 'cards';
 let scanInterval = null;
 let searchDebounceTimeout = null;
+let staticMode = null;
+let backendCheckPromise = null;
+let staticDataPromise = null;
+let staticInstitutes = [];
+let staticOpportunities = [];
+
+const TRACKER_CACHE_KEY = 'academia_tracker_cache';
+const CUSTOM_OPPS_KEY = 'academia_custom_opps';
+
+function detectBackendMode() {
+  if (staticMode !== null) return Promise.resolve(staticMode);
+  if (!backendCheckPromise) {
+    backendCheckPromise = (async () => {
+      try {
+        const res = await fetch('./api/stats', { headers: { Accept: 'application/json' } });
+        const ct = res.headers.get('content-type') || '';
+        staticMode = !(res.ok && ct.includes('application/json'));
+      } catch (e) {
+        staticMode = true;
+      }
+      return staticMode;
+    })();
+  }
+  return backendCheckPromise;
+}
+
+function loadStaticData() {
+  if (!staticDataPromise) {
+    staticDataPromise = Promise.all([
+      fetch('./data/institutes.json').then(r => (r.ok ? r.json() : [])),
+      fetch('./data/opportunities.json').then(r => (r.ok ? r.json() : []))
+    ]).then(([instList, oppList]) => {
+      staticInstitutes = Array.isArray(instList) ? instList : [];
+      staticOpportunities = Array.isArray(oppList) ? oppList : [];
+      return { institutes: staticInstitutes, opportunities: staticOpportunities };
+    });
+  }
+  return staticDataPromise;
+}
+
+function calculateUrgency(lastDateParsed) {
+  if (!lastDateParsed) return { daysRemaining: null, urgencyLevel: 'normal' };
+  if (lastDateParsed.startsWith('2027') || lastDateParsed.startsWith('2028')) {
+    return { daysRemaining: 365, urgencyLevel: 'rolling' };
+  }
+
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+
+  const deadline = new Date(lastDateParsed);
+  if (isNaN(deadline.getTime())) {
+    return { daysRemaining: null, urgencyLevel: 'normal' };
+  }
+
+  const diffTime = deadline - today;
+  const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+
+  if (diffDays < 0) return { daysRemaining: diffDays, urgencyLevel: 'expired' };
+  if (diffDays <= 3) return { daysRemaining: diffDays, urgencyLevel: 'critical' };
+  if (diffDays <= 7) return { daysRemaining: diffDays, urgencyLevel: 'warning' };
+  return { daysRemaining: diffDays, urgencyLevel: 'normal' };
+}
+
+function getLocalCustomOpportunities() {
+  try {
+    const raw = localStorage.getItem(CUSTOM_OPPS_KEY);
+    const parsed = raw ? JSON.parse(raw) : [];
+    return Array.isArray(parsed) ? parsed : [];
+  } catch (e) {
+    return [];
+  }
+}
+
+function saveLocalCustomOpportunities(items) {
+  try {
+    localStorage.setItem(CUSTOM_OPPS_KEY, JSON.stringify(items));
+  } catch (e) {}
+}
+
+function getLocalTrackerItems() {
+  try {
+    const raw = localStorage.getItem(TRACKER_CACHE_KEY);
+    const parsed = raw ? JSON.parse(raw) : [];
+    return Array.isArray(parsed) ? parsed : [];
+  } catch (e) {
+    return [];
+  }
+}
+
+function saveLocalTrackerItems(items) {
+  try {
+    localStorage.setItem(TRACKER_CACHE_KEY, JSON.stringify(items));
+  } catch (e) {}
+}
+
+function getActiveStaticOpportunities() {
+  const combined = [...getLocalCustomOpportunities(), ...staticOpportunities];
+  return combined
+    .map(o => {
+      const u = calculateUrgency(o.last_date_parsed);
+      return {
+        ...o,
+        daysRemaining: u.daysRemaining,
+        urgencyLevel: u.urgencyLevel
+      };
+    })
+    .filter(o => o.urgencyLevel !== 'expired');
+}
+
+function applyStaticScannerUi() {
+  const dot = document.getElementById('scanDot');
+  const label = document.getElementById('scanLabel');
+  const sub = document.getElementById('scanSub');
+  const title = document.getElementById('scanStatusTitle');
+  const percent = document.getElementById('scanProgressPercent');
+  const fill = document.getElementById('progressBarFill');
+  const scanned = document.getElementById('scannedCount');
+  const discovered = document.getElementById('discoveredCount');
+  const errors = document.getElementById('errorsCount');
+  const target = document.getElementById('currentTargetName');
+  const startBtn = document.getElementById('startScanBtn');
+  const stopBtn = document.getElementById('stopScanBtn');
+  const consoleLogs = document.getElementById('consoleLogs');
+
+  if (dot) dot.className = 'status-dot dot-idle';
+  if (label) label.textContent = 'Static Snapshot';
+  if (sub) sub.textContent = 'GitHub Pages • 253 Institutes';
+  if (title) title.textContent = 'Hosted Mode: Pre-Crawled Snapshot Active';
+  if (percent) percent.textContent = '100%';
+  if (fill) fill.style.width = '100%';
+  if (scanned) scanned.textContent = '253 / 253';
+  if (discovered) discovered.textContent = String(staticOpportunities.length || 0);
+  if (errors) errors.textContent = '0';
+  if (target) target.textContent = 'Local Node.js server required for live crawl';
+  if (startBtn) startBtn.disabled = false;
+  if (stopBtn) stopBtn.disabled = true;
+  if (consoleLogs) {
+    consoleLogs.innerHTML = [
+      '<div class="log-line">[GitHub Pages Mode] Serving pre-crawled active opportunities and 253 institutes snapshot.</div>',
+      '<div class="log-line text-muted">[Note] Browsers block direct cross-origin scraping of external .ac.in / .res.in portals.</div>',
+      '<div class="log-line text-muted">[Tip] To run live web crawls, clone the repo and run "node server.js" locally on http://localhost:5000.</div>'
+    ].join('');
+  }
+}
+
+function downloadBlobFile(content, filename, mimeType) {
+  const blob = new Blob([content], { type: mimeType });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
 
 // Initialize on DOM load
-document.addEventListener('DOMContentLoaded', () => {
+document.addEventListener('DOMContentLoaded', async () => {
+  initTheme();
+  await detectBackendMode();
+  if (staticMode) {
+    await loadStaticData();
+    applyStaticScannerUi();
+  } else {
+    startScannerPolling();
+  }
   loadInstitutes();
   loadStats();
   loadOpportunities();
   loadTracker();
-  initTheme();
-  startScannerPolling();
-  
+
   // Initialize Lucide icons
   if (window.lucide) {
     lucide.createIcons();
@@ -103,12 +265,38 @@ function setViewMode(mode) {
   if (window.lucide) lucide.createIcons();
 }
 
-// Load stats from API
+// Load stats from API or static snapshot
 async function loadStats() {
   try {
-    const res = await fetch('/api/stats');
-    if (!res.ok) return;
-    const data = await res.json();
+    await detectBackendMode();
+    let data;
+
+    if (staticMode) {
+      await loadStaticData();
+      const allOpps = getActiveStaticOpportunities();
+      const tracked = getLocalTrackerItems();
+      let urgentCount = 0;
+      let weekCount = 0;
+      allOpps.forEach(o => {
+        if (o.urgencyLevel === 'critical') urgentCount++;
+        if (o.urgencyLevel === 'critical' || o.urgencyLevel === 'warning') weekCount++;
+      });
+
+      data = {
+        totalInstitutes: staticInstitutes.length || 253,
+        totalOpportunities: allOpps.length,
+        phdCount: allOpps.filter(o => o.opportunity_type === 'PhD Admission').length,
+        fellowshipCount: allOpps.filter(o => ['JRF/SRF/Project Fellow', 'Postdoctoral Fellowship'].includes(o.opportunity_type)).length,
+        facultyCount: allOpps.filter(o => ['Faculty Position', 'Scientist/Technical Staff'].includes(o.opportunity_type)).length,
+        urgentCount,
+        weekCount,
+        trackedCount: tracked.length
+      };
+    } else {
+      const res = await fetch('./api/stats');
+      if (!res.ok) return;
+      data = await res.json();
+    }
 
     document.getElementById('statInstitutes').textContent = data.totalInstitutes || 253;
     document.getElementById('statOpps').textContent = data.totalOpportunities || 0;
@@ -150,9 +338,58 @@ async function loadOpportunities() {
   const params = new URLSearchParams({ search, category, type, urgency, state, sort });
 
   try {
-    const res = await fetch(`/api/opportunities?${params}`);
-    if (!res.ok) throw new Error('Network error');
-    opportunities = await res.json();
+    await detectBackendMode();
+    if (staticMode) {
+      await loadStaticData();
+      let opps = getActiveStaticOpportunities();
+      const s = search.trim().toLowerCase();
+
+      if (category !== 'ALL') opps = opps.filter(o => o.category === category);
+      if (type !== 'ALL') opps = opps.filter(o => o.opportunity_type === type);
+      if (state !== 'ALL') opps = opps.filter(o => (o.institute_state || o.state) === state);
+      if (s) {
+        opps = opps.filter(o =>
+          (o.title || '').toLowerCase().includes(s) ||
+          (o.institute_name || '').toLowerCase().includes(s) ||
+          (o.department || '').toLowerCase().includes(s) ||
+          (o.description || '').toLowerCase().includes(s)
+        );
+      }
+
+      if (urgency === 'urgent') {
+        opps = opps.filter(o => o.urgencyLevel === 'critical');
+      } else if (urgency === 'week') {
+        opps = opps.filter(o => o.urgencyLevel === 'critical' || o.urgencyLevel === 'warning');
+      } else if (urgency === 'active') {
+        opps = opps.filter(o => o.urgencyLevel === 'normal' || o.urgencyLevel === 'rolling');
+      } else if (urgency === 'rolling') {
+        opps = opps.filter(o => o.urgencyLevel === 'rolling');
+      }
+
+      if (sort === 'deadline_asc') {
+        opps.sort((a, b) => {
+          if (!a.last_date_parsed) return 1;
+          if (!b.last_date_parsed) return -1;
+          return a.last_date_parsed.localeCompare(b.last_date_parsed);
+        });
+      } else if (sort === 'deadline_desc') {
+        opps.sort((a, b) => {
+          if (!a.last_date_parsed) return 1;
+          if (!b.last_date_parsed) return -1;
+          return b.last_date_parsed.localeCompare(a.last_date_parsed);
+        });
+      } else if (sort === 'newest') {
+        opps.sort((a, b) => (b.created_at || '').localeCompare(a.created_at || ''));
+      } else if (sort === 'institute') {
+        opps.sort((a, b) => (a.institute_name || '').localeCompare(b.institute_name || ''));
+      }
+
+      opportunities = opps;
+    } else {
+      const res = await fetch(`./api/opportunities?${params}`);
+      if (!res.ok) throw new Error('Network error');
+      opportunities = await res.json();
+    }
 
     document.getElementById('resultsCount').textContent = `Showing ${opportunities.length} active opportunities`;
     renderOpportunities();
@@ -261,9 +498,9 @@ function renderCards() {
           <button class="btn-track ${isTracked ? 'tracked' : ''}" onclick="toggleTrackOpportunity('${opp.id}')">
             <i data-lucide="${isTracked ? 'check-circle' : 'bookmark'}"></i> ${isTracked ? 'Tracked' : 'Add to Pipeline'}
           </button>
-          <a href="/api/calendar/${opp.id}.ics" download class="btn-ics" title="Export Deadline to Calendar (.ics)">
+          <button type="button" onclick="downloadIcs('${opp.id}')" class="btn-ics" title="Export Deadline to Calendar (.ics)">
             <i data-lucide="calendar"></i>
-          </a>
+          </button>
         </div>
       </div>
     `;
@@ -304,7 +541,7 @@ function renderTable() {
           <div style="display:flex; gap:6px;">
             ${opp.link ? `<a href="${opp.link}" target="_blank" class="btn-micro" title="Portal">🔗</a>` : ''}
             <button class="btn-micro" onclick="toggleTrackOpportunity('${opp.id}')" title="Track">${isTracked ? '✓' : '+'}</button>
-            <a href="/api/calendar/${opp.id}.ics" download class="btn-micro" title="Calendar">📅</a>
+            <button type="button" onclick="downloadIcs('${opp.id}')" class="btn-micro" title="Calendar">📅</button>
           </div>
         </td>
       </tr>
@@ -315,19 +552,28 @@ function renderTable() {
 // Load 253 institutes directory
 async function loadInstitutes() {
   try {
-    const res = await fetch('/api/institutes');
-    if (!res.ok) return;
-    institutes = await res.json();
+    await detectBackendMode();
+    if (staticMode) {
+      await loadStaticData();
+      institutes = staticInstitutes;
+    } else {
+      const res = await fetch('./api/institutes');
+      if (!res.ok) return;
+      institutes = await res.json();
+    }
 
-    // Populate State filter dropdown
+    // Populate State filter dropdown once
     const states = [...new Set(institutes.map(i => i.state).filter(Boolean))].sort();
     const stateSelect = document.getElementById('stateFilter');
     if (stateSelect) {
+      const existing = new Set(Array.from(stateSelect.options).map(o => o.value));
       states.forEach(st => {
-        const opt = document.createElement('option');
-        opt.value = st;
-        opt.textContent = st;
-        stateSelect.appendChild(opt);
+        if (!existing.has(st)) {
+          const opt = document.createElement('option');
+          opt.value = st;
+          opt.textContent = st;
+          stateSelect.appendChild(opt);
+        }
       });
     }
 
@@ -393,9 +639,14 @@ function filterInstitutes() {
 
 // Single institute live check
 async function scanSpecificInstitute(instId) {
+  await detectBackendMode();
+  if (staticMode) {
+    showToast('Live portal crawling runs in the local Node.js server. Use the official links above in GitHub Pages mode.', true);
+    return;
+  }
   showToast('Initiating portal crawl for institute...');
   try {
-    const res = await fetch(`/api/institutes/${instId}/scan`, { method: 'POST' });
+    const res = await fetch(`./api/institutes/${instId}/scan`, { method: 'POST' });
     const result = await res.json();
     if (result.success) {
       showToast(`Scan complete! ${result.itemsCount} opportunities found.`);
@@ -420,24 +671,24 @@ const STAGES_ORDER = [
 
 async function loadTracker() {
   // Load local cache first so UI is instant even if network is slow
-  try {
-    const cached = localStorage.getItem('academia_tracker_cache');
-    if (cached) {
-      const parsed = JSON.parse(cached);
-      if (Array.isArray(parsed) && parsed.length > 0 && trackerItems.length === 0) {
-        trackerItems = parsed;
-        renderKanban();
-      }
-    }
-  } catch (e) {}
+  const cached = getLocalTrackerItems();
+  if (cached.length > 0 && trackerItems.length === 0) {
+    trackerItems = cached;
+    renderKanban();
+  }
+
+  await detectBackendMode();
+  if (staticMode) {
+    trackerItems = getLocalTrackerItems();
+    renderKanban();
+    return;
+  }
 
   try {
-    const res = await fetch('/api/tracker');
+    const res = await fetch('./api/tracker');
     if (!res.ok) return;
     trackerItems = await res.json();
-    try {
-      localStorage.setItem('academia_tracker_cache', JSON.stringify(trackerItems));
-    } catch (e) {}
+    saveLocalTrackerItems(trackerItems);
     renderKanban();
   } catch (e) {
     console.warn('Could not contact /api/tracker, rendering local pipeline state:', e);
@@ -615,15 +866,19 @@ async function toggleTrackOpportunity(oppId) {
 
     // Optimistic local add
     trackerItems.unshift(newEntry);
-    try {
-      localStorage.setItem('academia_tracker_cache', JSON.stringify(trackerItems));
-    } catch (e) {}
+    saveLocalTrackerItems(trackerItems);
     renderKanban();
     renderOpportunities();
     showToast('Added to Application Pipeline!');
 
+    await detectBackendMode();
+    if (staticMode) {
+      await loadStats();
+      return;
+    }
+
     try {
-      await fetch('/api/tracker', {
+      await fetch('./api/tracker', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(newEntry)
@@ -640,26 +895,30 @@ async function updateTrackerStage(id, newStage) {
   // 1. Instant optimistic UI update
   const item = trackerItems.find(t => t.id === id);
   if (!item) return;
-  const oldStage = item.stage;
   item.stage = newStage;
   item.updated_at = new Date().toISOString();
 
   // Save in local cache and re-render instantly
-  try {
-    localStorage.setItem('academia_tracker_cache', JSON.stringify(trackerItems));
-  } catch (e) {}
+  saveLocalTrackerItems(trackerItems);
   renderKanban();
+
+  await detectBackendMode();
+  if (staticMode) {
+    showToast(`Application moved to "${newStage}"`);
+    loadStats();
+    return;
+  }
 
   // 2. Persist to server
   try {
-    let res = await fetch('/api/tracker/stage', {
+    let res = await fetch('./api/tracker/stage', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ id, stage: newStage })
     });
 
     if (!res.ok) {
-      res = await fetch(`/api/tracker/${id}`, {
+      res = await fetch(`./api/tracker/${id}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ stage: newStage })
@@ -681,15 +940,19 @@ async function updateTrackerStage(id, newStage) {
 async function deleteTrackerItem(id) {
   if (!confirm('Remove this application from pipeline?')) return;
   trackerItems = trackerItems.filter(t => t.id !== id);
-  try {
-    localStorage.setItem('academia_tracker_cache', JSON.stringify(trackerItems));
-  } catch (e) {}
+  saveLocalTrackerItems(trackerItems);
   renderKanban();
   loadStats();
   renderOpportunities();
 
+  await detectBackendMode();
+  if (staticMode) {
+    showToast('Application removed from pipeline');
+    return;
+  }
+
   try {
-    await fetch(`/api/tracker/${id}`, { method: 'DELETE' });
+    await fetch(`./api/tracker/${id}`, { method: 'DELETE' });
     showToast('Application removed from pipeline');
   } catch (e) {
     showToast('Removed from pipeline (local)');
@@ -704,8 +967,14 @@ function startScannerPolling() {
 }
 
 async function pollScanStatus() {
+  await detectBackendMode();
+  if (staticMode) {
+    if (scanInterval) clearInterval(scanInterval);
+    applyStaticScannerUi();
+    return;
+  }
   try {
-    const res = await fetch('/api/scan/status');
+    const res = await fetch('./api/scan/status');
     if (!res.ok) return;
     const status = await res.json();
 
@@ -764,9 +1033,16 @@ async function pollScanStatus() {
 }
 
 async function startQuickScan() {
+  await detectBackendMode();
+  if (staticMode) {
+    switchTab('scanner');
+    applyStaticScannerUi();
+    showToast('Live portal crawling requires running "node server.js" locally.', true);
+    return;
+  }
   showToast('Starting portal scanner...');
   switchTab('scanner');
-  await fetch('/api/scan/start', {
+  await fetch('./api/scan/start', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ category: 'ALL', limit: 15 })
@@ -774,9 +1050,16 @@ async function startQuickScan() {
 }
 
 async function triggerCategoryScan(cat) {
+  await detectBackendMode();
+  if (staticMode) {
+    switchTab('scanner');
+    applyStaticScannerUi();
+    showToast('Live portal crawling requires running "node server.js" locally.', true);
+    return;
+  }
   showToast(`Starting crawler for ${cat}...`);
   switchTab('scanner');
-  await fetch('/api/scan/start', {
+  await fetch('./api/scan/start', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ category: cat, limit: 10 })
@@ -784,9 +1067,15 @@ async function triggerCategoryScan(cat) {
 }
 
 async function startScanProcess() {
+  await detectBackendMode();
+  if (staticMode) {
+    applyStaticScannerUi();
+    showToast('Live portal crawling requires running "node server.js" locally.', true);
+    return;
+  }
   const cat = document.getElementById('categoryFilter')?.value || 'ALL';
   showToast(`Starting full crawler run...`);
-  await fetch('/api/scan/start', {
+  await fetch('./api/scan/start', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ category: cat })
@@ -794,7 +1083,9 @@ async function startScanProcess() {
 }
 
 async function stopScanProcess() {
-  await fetch('/api/scan/stop', { method: 'POST' });
+  await detectBackendMode();
+  if (staticMode) return;
+  await fetch('./api/scan/stop', { method: 'POST' });
   showToast('Scan stopped');
 }
 
@@ -846,12 +1137,77 @@ function filterByUrgency(urgency) {
   loadOpportunities();
 }
 
+// Calendar Export (.ICS)
+async function downloadIcs(oppId) {
+  await detectBackendMode();
+  if (!staticMode) {
+    window.location.href = `./api/calendar/${encodeURIComponent(oppId)}.ics`;
+    return;
+  }
+
+  const opp = opportunities.find(o => o.id === oppId) || getActiveStaticOpportunities().find(o => o.id === oppId);
+  if (!opp) {
+    showToast('Opportunity not found for calendar export', true);
+    return;
+  }
+
+  let dtEnd = '20261130T235959Z';
+  if (opp.last_date_parsed && opp.last_date_parsed.match(/^\d{4}-\d{2}-\d{2}$/)) {
+    dtEnd = opp.last_date_parsed.replace(/-/g, '') + 'T180000Z';
+  }
+
+  const ics = [
+    'BEGIN:VCALENDAR',
+    'VERSION:2.0',
+    'PRODID:-//AcademiaRadar//Research Deadline Tracker//EN',
+    'CALSCALE:GREGORIAN',
+    'METHOD:PUBLISH',
+    'BEGIN:VEVENT',
+    `UID:${opp.id}@academiaradar.in`,
+    `DTSTAMP:${new Date().toISOString().replace(/[-:]/g, '').split('.')[0]}Z`,
+    `DTSTART:${dtEnd}`,
+    `DTEND:${dtEnd}`,
+    `SUMMARY:DEADLINE: ${opp.title} (${opp.institute_name})`,
+    `DESCRIPTION:Institute: ${opp.institute_name}\\nCategory: ${opp.opportunity_type}\\nStipend: ${opp.stipend_salary || 'N/A'}\\nPortal Link: ${opp.link || ''}\\n\\nDetails: ${(opp.description || '').replace(/\r?\n/g, ' ')}`,
+    `URL:${opp.link || ''}`,
+    'BEGIN:VALARM',
+    'TRIGGER:-P2D',
+    'ACTION:DISPLAY',
+    `DESCRIPTION:Reminder: 2 days left to apply for ${opp.title}`,
+    'END:VALARM',
+    'END:VEVENT',
+    'END:VCALENDAR'
+  ].join('\r\n');
+
+  downloadBlobFile(ics, `${opp.id}-deadline.ics`, 'text/calendar; charset=utf-8');
+  showToast('Calendar (.ics) downloaded!');
+}
+window.downloadIcs = downloadIcs;
+
 // Export Data
-function exportData(format) {
+async function exportData(format) {
+  await detectBackendMode();
+  if (!staticMode) {
+    if (format === 'csv') {
+      window.location.href = './api/export/csv';
+    } else if (format === 'json') {
+      window.location.href = './api/export/json';
+    }
+    return;
+  }
+
+  const list = opportunities.length > 0 ? opportunities : getActiveStaticOpportunities();
   if (format === 'csv') {
-    window.location.href = '/api/export/csv';
+    let csv = 'ID,Institute,Category,Type,Title,Department,Last Date,Start Date,Stipend,Link\r\n';
+    list.forEach(o => {
+      const clean = str => `"${String(str || '').replace(/"/g, '""').replace(/\r?\n/g, ' ')}"`;
+      csv += `${clean(o.id)},${clean(o.institute_name)},${clean(o.category)},${clean(o.opportunity_type)},${clean(o.title)},${clean(o.department)},${clean(o.last_date)},${clean(o.start_date)},${clean(o.stipend_salary)},${clean(o.link)}\r\n`;
+    });
+    downloadBlobFile(csv, 'Research_Advertisements_2026.csv', 'text/csv; charset=utf-8');
+    showToast('Exported CSV file!');
   } else if (format === 'json') {
-    window.location.href = '/api/export/json';
+    downloadBlobFile(JSON.stringify(list, null, 2), 'Research_Advertisements_2026.json', 'application/json');
+    showToast('Exported JSON file!');
   }
 }
 
@@ -878,8 +1234,43 @@ async function submitCustomOpportunity(e) {
   const eligibility = document.getElementById('addEligibility').value;
   const description = document.getElementById('addDesc').value;
 
+  await detectBackendMode();
+  if (staticMode) {
+    const now = new Date().toISOString();
+    const customItem = {
+      id: `custom-${Date.now()}`,
+      institute_id: 'custom',
+      institute_name,
+      category: category || 'Other',
+      opportunity_type: opportunity_type || 'PhD Admission',
+      title,
+      department: department || 'General',
+      description: description || 'Manually added advertisement by user',
+      advertisement_no: `CUSTOM/${new Date().getFullYear()}`,
+      link: link || '',
+      pdf_url: '',
+      start_date: start_date || now.split('T')[0],
+      last_date: last_date || 'Rolling / Open',
+      last_date_parsed: last_date || '2026-12-31',
+      stipend_salary: stipend_salary || '',
+      eligibility: eligibility || '',
+      is_active: 1,
+      is_custom: 1,
+      created_at: now
+    };
+    const customList = getLocalCustomOpportunities();
+    customList.unshift(customItem);
+    saveLocalCustomOpportunities(customList);
+    showToast('Custom advertisement saved in browser!');
+    closeAddModal();
+    document.getElementById('addOppForm').reset();
+    loadOpportunities();
+    loadStats();
+    return;
+  }
+
   try {
-    const res = await fetch('/api/opportunities', {
+    const res = await fetch('./api/opportunities', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -932,16 +1323,42 @@ async function submitTrackerForm(e) {
     applied_date, portal_url, login_notes, custom_notes
   };
 
+  await detectBackendMode();
+  if (staticMode) {
+    const now = new Date().toISOString();
+    if (id) {
+      const idx = trackerItems.findIndex(t => t.id === id);
+      if (idx !== -1) {
+        trackerItems[idx] = { ...trackerItems[idx], ...payload, updated_at: now };
+      }
+      showToast('Application updated');
+    } else {
+      trackerItems.unshift({
+        id: `track-${Date.now()}`,
+        opportunity_id: null,
+        ...payload,
+        created_at: now,
+        updated_at: now
+      });
+      showToast('Application added to pipeline');
+    }
+    saveLocalTrackerItems(trackerItems);
+    closeTrackerModal();
+    renderKanban();
+    loadStats();
+    return;
+  }
+
   try {
     if (id) {
-      await fetch(`/api/tracker/${id}`, {
+      await fetch(`./api/tracker/${id}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload)
       });
       showToast('Application updated');
     } else {
-      await fetch('/api/tracker', {
+      await fetch('./api/tracker', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload)

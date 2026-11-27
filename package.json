@@ -5,6 +5,7 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
+    "export:static": "node scripts/export_static.js",
     "test": "node scripts/verify_logic.js"
   },
   "keywords": [

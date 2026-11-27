@@ -559,9 +559,25 @@ setTimeout(() => {
 }, 3000);
 
 server.listen(PORT, '0.0.0.0', () => {
+  const os = require('os');
+  let localIp = null;
+  const nets = os.networkInterfaces();
+  for (const name of Object.keys(nets)) {
+    for (const net of nets[name]) {
+      if ((net.family === 'IPv4' || net.family === 4) && !net.internal) {
+        localIp = net.address;
+        break;
+      }
+    }
+    if (localIp) break;
+  }
+
   console.log('================================================================');
   console.log(` 🚀  AcademiaRadar - Research & PhD Portal Web App`);
-  console.log(` 🌐  Local Server active at: http://localhost:${PORT}`);
+  console.log(` 🌐  Local Access:    http://localhost:${PORT}`);
+  if (localIp) {
+    console.log(` 📱  Network Access:  http://${localIp}:${PORT} (Share with devices on same Wi-Fi)`);
+  }
   console.log(` 🏢  Tracking 253 Premier Institutes across all categories`);
   console.log('================================================================');
 });
